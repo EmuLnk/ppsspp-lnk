@@ -14,7 +14,7 @@
 #include "ext/rcheevos/include/rc_client.h"
 
 static constexpr int EMULINK_PORT = 55355;
-static constexpr u32 MAX_PAYLOAD = 1024;
+static constexpr u32 MAX_PAYLOAD = 4096;
 
 EmuLinkServer &EmuLinkServer::Instance() {
 	static EmuLinkServer instance;
@@ -116,6 +116,45 @@ void EmuLinkServer::ServerLoop() {
 			sendto(m_socket, json, strlen(json), 0, (sockaddr *)&sender, senderLen);
 			INFO_LOG(Log::System, "EmuLinkServer: V2 handshake: %s", json);
 			continue;
+		}
+
+		// Batch read: "EL" magic (0x45, 0x4C) + count + entries
+		if (received >= 4 &&
+		    packet_buffer[0] == 0x45 && packet_buffer[1] == 0x4C) {
+			uint16_t count;
+			std::memcpy(&count, packet_buffer + 2, 2);
+			if (count > 0 && count <= 256 && received >= (int)(4 + count * 8)) {
+				u8 response[16384];
+				int resp_off = 4;
+				response[0] = 0x45;
+				response[1] = 0x4C;
+				std::memcpy(response + 2, &count, 2);
+
+				auto lock = Memory::Lock();
+
+				for (uint16_t i = 0; i < count; i++) {
+					u32 addr, size;
+					std::memcpy(&addr, packet_buffer + 4 + i * 8, 4);
+					std::memcpy(&size, packet_buffer + 4 + i * 8 + 4, 4);
+					if (size > MAX_PAYLOAD) size = MAX_PAYLOAD;
+
+					if (Memory::IsValidRange(addr, size) &&
+					    resp_off + 2 + (int)size <= (int)sizeof(response)) {
+						u16 len16 = static_cast<u16>(size);
+						std::memcpy(response + resp_off, &len16, 2);
+						resp_off += 2;
+						Memory::MemcpyUnchecked(response + resp_off, addr, size);
+						resp_off += size;
+					} else {
+						response[resp_off++] = 0;
+						response[resp_off++] = 0;
+					}
+				}
+
+				sendto(m_socket, (const char *)response, resp_off, 0,
+				       (sockaddr *)&sender, senderLen);
+				continue;
+			}
 		}
 
 		if (received >= 8) {
