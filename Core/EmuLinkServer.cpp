@@ -124,11 +124,11 @@ void EmuLinkServer::ServerLoop() {
 			uint16_t count;
 			std::memcpy(&count, packet_buffer + 2, 2);
 			if (count > 0 && count <= 256 && received >= (int)(4 + count * 8)) {
-				u8 response[16384];
+				u8 response[65000];
 				int resp_off = 4;
+				uint16_t actual = 0;
 				response[0] = 0x45;
 				response[1] = 0x4C;
-				std::memcpy(response + 2, &count, 2);
 
 				auto lock = Memory::Lock();
 
@@ -145,11 +145,18 @@ void EmuLinkServer::ServerLoop() {
 						resp_off += 2;
 						Memory::MemcpyUnchecked(response + resp_off, addr, size);
 						resp_off += size;
+						actual++;
+					} else if (resp_off + 2 <= (int)sizeof(response)) {
+						response[resp_off++] = 0;
+						response[resp_off++] = 0;
+						actual++;
 					} else {
-						response[resp_off++] = 0;
-						response[resp_off++] = 0;
+						break;
 					}
 				}
+
+				response[2] = actual & 0xFF;
+				response[3] = (actual >> 8) & 0xFF;
 
 				sendto(m_socket, (const char *)response, resp_off, 0,
 				       (sockaddr *)&sender, senderLen);
